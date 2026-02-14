@@ -1,29 +1,55 @@
 console.log("Content script running");
 
-let startTime = Date.now();
+// ---------- CONFIG ----------
+const DEMO_MODE = true;                          // Toggle demo/real mode
+const INTERVAL_MS = DEMO_MODE ? 10000 : 60000;   // 10s demo, 1min real
+const MAX_CONTINUOUS_SCORE = DEMO_MODE ? 60 : 40; // Max points for continuous usage
+const DEMO_MAX_MINUTES = 10;                      // Cap “demo minutes” for formula
+
+// ---------- STATE ----------
+let startTime;
+let emergencyUsed = false;
+let selfRating = 5;
+
 let greenShown = false;
 let redShown = false;
-let emergencyUsed = false;
-let selfRating = 5;  // default neutral
 let twentyShown = false;
 let ratingAsked = false;
 
+// ---------- RESTORE STATE ----------
+chrome.storage.local.get(
+    ["emergencyUsed", "selfRating", "startTime"],
+    (data) => {
 
+        // --- Demo mode: always start fresh at 0 ---
+        startTime = DEMO_MODE ? Date.now() : (data.startTime || Date.now());
+
+        emergencyUsed = data.emergencyUsed || false;
+        selfRating = data.selfRating || 5;
+
+        // Only save startTime for real mode
+        if (!DEMO_MODE) {
+            chrome.storage.local.set({ startTime });
+        }
+
+        startBurnoutTracking();
+    }
+);
+
+// ---------- BURNOUT CALCULATION ----------
 function calculateBurnoutScore(minutes, selfRating, emergencyUsed) {
+    // 1️⃣ Continuous Usage - exponential for smooth demo
+    const continuousScore = MAX_CONTINUOUS_SCORE * (1 - Math.exp(-minutes / 5));
 
-    // 1️⃣ Continuous Usage (Max 40)
-    const continuousScore = Math.min(minutes, 5) / 5 * 60;
-
-
-    // 2️⃣ Late Night (Max 20)
+    // 2️⃣ Late Night
     const hour = new Date().getHours();
     const lateNightScore = (hour >= 0 && hour < 5) ? 20 : 0;
 
-    // 3️⃣ Self Rating (Max 30)
-    const inverted = 6 - (selfRating || 5); 
-    const selfScore = inverted / 5 * 30;
+    // 3️⃣ Self Rating
+    const inverted = 6 - (selfRating || 5);
+    const selfScore = inverted / 5 * 25;
 
-    // 4️⃣ Emergency Penalty (Max 10)
+    // 4️⃣ Emergency Penalty
     const emergencyScore = emergencyUsed ? 10 : 0;
 
     const total = continuousScore + lateNightScore + selfScore + emergencyScore;
@@ -31,55 +57,57 @@ function calculateBurnoutScore(minutes, selfRating, emergencyUsed) {
     return Math.round(Math.min(total, 100));
 }
 
+// ---------- MAIN TRACKER ----------
+function startBurnoutTracking() {
+    setInterval(() => {
 
-setInterval(() => {
-    let minutes = 8;   // FORCE TEST
+        // --- Controlled demo “minutes” ---
+        let minutes;
+        if (DEMO_MODE) {
+            const elapsedDemoSeconds = (Date.now() - startTime) / 1000; // seconds since start
+            minutes = Math.min(elapsedDemoSeconds / 5, DEMO_MAX_MINUTES); // 5s = 1 demo minute, cap
+        } else {
+            minutes = (Date.now() - startTime) / 60000; // real minutes
+        }
 
-    let minutes = Math.floor((Date.now() - startTime) / 60000);
-    console.log("Minutes:", minutes);
+        let burnoutScore = calculateBurnoutScore(minutes, selfRating, emergencyUsed);
 
-    let burnoutScore = calculateBurnoutScore(minutes, selfRating, emergencyUsed);
+        console.log("Minutes:", minutes.toFixed(1));
+        console.log("Burnout Score:", burnoutScore);
 
-    chrome.storage.local.set({
-        burnoutScore: burnoutScore,
-        totalMinutes: minutes
-    });
+        chrome.storage.local.set({
+            burnoutScore,
+            totalMinutes: minutes
+        });
 
-    console.log("Burnout Score:", burnoutScore);
+        // --- Alerts ---
+        if (burnoutScore >= 50 && burnoutScore < 63 && !greenShown) {
+            showGreenBox(minutes);
+            greenShown = true;
+        }
 
-    // Green
-    // Mild Risk (Hydration)
-if (burnoutScore >= 35 && burnoutScore < 40 && !greenShown) {
-    showGreenBox(minutes);
-    greenShown = true;
+        if (burnoutScore >= 63 && burnoutScore < 72 && !twentyShown) {
+            showTwentyRule();
+            twentyShown = true;
+        }
+
+        if (burnoutScore >= 72 && !ratingAsked) {
+            showSelfCheck();
+            ratingAsked = true;
+        }
+
+        if (burnoutScore >= 75 && !redShown) {
+            showRedOverlay(minutes);
+            redShown = true;
+        }
+
+    }, INTERVAL_MS);
 }
 
-// Moderate Risk (Eye Alert)
-if (burnoutScore >= 40 && burnoutScore < 75 && !twentyShown) {
-    console.log(burnoutScore);
-    showTwentyRule();
-    twentyShown = true;
-}
-if (burnoutScore >= 40 && !ratingAsked) {console.log(burnoutScore);
-    showSelfCheck();
-    ratingAsked = true;
-}
-// High Risk (Red)
-if (burnoutScore >= 75 && !redShown) {
-    console.log(burnoutScore);
-    showRedOverlay(minutes);
-    redShown = true;
-}
-
-
-}, 60);   // ← THIS must close setInterval
-
+// ---------- GREEN BOX ----------
 function showGreenBox(minutes) {
-
     let box = document.createElement("div");
-
-    box.innerText = `You've worked ${minutes} ${minutes === 1 ? "minute" : "minutes"}.\nStay hydrated 💧`;
-
+    box.innerText = `You've worked ${Math.floor(minutes)} ${Math.floor(minutes) === 1 ? "minute" : "minutes"}.\nStay hydrated 💧`;
     box.style = `
         position: fixed;
         top: 20px;
@@ -90,29 +118,16 @@ function showGreenBox(minutes) {
         border-radius: 8px;
         z-index: 9999;
     `;
-
     document.body.appendChild(box);
-
-    // Remove after 10 seconds
-    setTimeout(() => {
-        box.remove();
-    }, 10000);
+    setTimeout(() => box.remove(), 10000);
 }
 
-
+// ---------- RED OVERLAY ----------
 function showRedOverlay(minutes) {
-
-    // Add pulse animation
-    let style = document.createElement("style");
-    style.innerHTML = `
-    @keyframes pulse {
-        0% { background-color: rgba(255,0,0,0.95); }
-        50% { background-color: rgba(200,0,0,1); }
-        100% { background-color: rgba(255,0,0,0.95); }
-    }`;
-    document.head.appendChild(style);
+    if (document.getElementById("burnoutOverlay")) return;
 
     let overlay = document.createElement("div");
+    overlay.id = "burnoutOverlay";
 
     overlay.style = `
         position: fixed;
@@ -129,12 +144,11 @@ function showRedOverlay(minutes) {
         z-index: 99999;
         font-size: 24px;
         text-align: center;
-        animation: pulse 1s infinite;
     `;
 
     overlay.innerHTML = `
         <h2>⚠ High Risk Detected</h2>
-        <p>You’ve worked ${minutes} minutes continuously.</p>
+        <p>You’ve worked ${Math.floor(minutes)} minutes continuously.</p>
         <p>Take a break.</p>
         <button id="emergencyBtn" disabled>
             Emergency Continue (5)
@@ -149,7 +163,6 @@ function showRedOverlay(minutes) {
     let interval = setInterval(() => {
         countdown--;
         btn.innerText = `Emergency Continue (${countdown})`;
-
         if (countdown === 0) {
             clearInterval(interval);
             btn.disabled = false;
@@ -159,19 +172,20 @@ function showRedOverlay(minutes) {
 
     btn.onclick = () => {
         emergencyUsed = true;
+        chrome.storage.local.set({ emergencyUsed: true });
         overlay.remove();
     };
 }
 
+// ---------- 20-20-20 RULE ----------
 function showTwentyRule() {
-console.log("show 20 rule");
     let box = document.createElement("div");
-
     box.innerHTML = `
-        <div style="font-size:18px;margin-bottom:8px;">👀 Eye Strain Alert</div>
+        <div style="font-size:18px;margin-bottom:8px;">
+            👀 Eye Strain Alert
+        </div>
         <div>Look at something 20 feet away for 20 seconds.</div>
     `;
-
     box.style = `
         position: fixed;
         bottom: 30px;
@@ -182,28 +196,17 @@ console.log("show 20 rule");
         border-radius: 10px;
         z-index: 9999;
         box-shadow: 0 0 15px rgba(0,0,0,0.3);
-        transition: opacity 0.5s ease;
-        opacity: 0;
     `;
-
     document.body.appendChild(box);
-
-    setTimeout(() => {
-        box.style.opacity = "1";
-    }, 50);
-
-    // Remove after 12 seconds
-    setTimeout(() => {
-        box.remove();
-    }, 12000);
+    setTimeout(() => box.remove(), 12000);
 }
-function showSelfCheck() {
-console.log("self check");
-    let box = document.createElement("div");
 
+// ---------- SELF CHECK ----------
+function showSelfCheck() {
+    let box = document.createElement("div");
     box.innerHTML = `
         <div style="margin-bottom:10px;font-size:18px;">
-            Hey — quick check in. How are you feeling?
+            Quick check-in: How are you feeling?
         </div>
         <div style="font-size:28px; cursor:pointer;">
             <span data-val="1">😄</span>
@@ -213,7 +216,6 @@ console.log("self check");
             <span data-val="5">😵</span>
         </div>
     `;
-
     box.style = `
         position: fixed;
         bottom: 100px;
@@ -227,19 +229,14 @@ console.log("self check");
         z-index: 99999;
         text-align: center;
     `;
-
     document.body.appendChild(box);
 
     box.querySelectorAll("span").forEach(span => {
         span.onclick = () => {
             selfRating = parseInt(span.getAttribute("data-val"));
-            chrome.storage.local.set({ selfRating: selfRating });
-
+            chrome.storage.local.set({ selfRating });
             box.innerHTML = "Thanks for checking in 💙";
-
-            setTimeout(() => {
-                box.remove();
-            }, 1500);
+            setTimeout(() => box.remove(), 1500);
         };
     });
 }
