@@ -1,4 +1,4 @@
-console.log("Content script running");
+   console.log("Content script running");
 
 // ---------- CONFIG ----------
 const DEMO_MODE = true;                          // Toggle demo/real mode
