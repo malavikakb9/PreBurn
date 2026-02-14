@@ -48,8 +48,8 @@ Installation
 3. Click "Load unpacked" and select project folder
 
 Run
-# The extension runs automatically in browser tabs
-# Open a new tab to see burnout alerts
+The extension runs automatically in browser tabs
+#Open a new tab to see burnout alerts
 
 Project Documentation
 For Software:
